@@ -7,9 +7,7 @@
 
 -record(ssp_invite, {
     to :: binary(),
-    from :: binary(),
-    timestamp :: integer(),
-    ref :: uuid()
+    from :: binary()
 }).
 
 -type ssp_invite() :: ssp_invite.

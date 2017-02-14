@@ -24,7 +24,7 @@
 
 -export([
     register_ssp_client/3,
-    ssp_client_invite/3,
+    ssp_client_invite/5,
     ssp_client_disconnected/1
 ]).
 
@@ -39,14 +39,15 @@ init([]) ->
 register_ssp_client(Pid, Username, Password) ->
     gen_server:call(?MODULE, {register_ssp_client, Pid, Username, Password}, infinity).
 
-ssp_client_invite(Pid, Token, Invite) ->
-    gen_server:call(?MODULE, {ssp_client_invite, Token, Invite}, infinity).
+ssp_client_invite(Token, From, To, Ref, Invite) ->
+    gen_server:call(?MODULE, {ssp_client_invite, Token, From, To, Ref, Invite}, infinity).
 
-ssp_client_disconnected(Pid) ->
+ssp_client_disconnected(_Pid) ->
     ok.
 
 handle_call({register_ssp_client, Pid, Username, _Password}, _From, #state{registry = Registry} = State) ->
     %check if user already exists
+    % TODO: MUTEX required for ets
     Token = list_to_binary(uuid:to_string(uuid:uuid4())),
     ets:select_delete(Registry, ets:fun2ms(fun(#client{username=U}) when U == Username -> true end)),
 
@@ -61,20 +62,35 @@ handle_call({register_ssp_client, Pid, Username, _Password}, _From, #state{regis
     ),
     {reply, {ok, Token}, State};
 
-handle_call({ssp_client_invite, Token, Invite}, _From, #state{registry = Registry} = State) ->
+handle_call({ssp_client_invite, Token, From, To, Ref, Invite}, _From, #state{registry = Registry} = State) ->
     %check if user already exists
+    io:format("handling ssp_client_invite ~n"),
     case ets:select(Registry, ets:fun2ms(fun(N = #client{token=T}) when T == Token -> N end)) of
-        [] ->
-            {reply, {error, invalid_session}, State};
-        [_Client] ->
-            Ret = handle_invite(Invite),
-            {reply, Ret, State}
+        [#client{token = Token, username = From} = _Client] ->
+            io:format("found peer~n"),
+            Ret = handle_invite(From, To, Ref, Invite, Registry),
+            {reply, Ret, State};
+        [H|T] ->
+            io:format("multiple session~p~n", [T]),
+            {reply, {error, multiple_session}, State};
+        _ ->
+            io:format("invalid session~n"),
+            {reply, {error, invalid_session}, State}
     end;
 
 handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 
 
-handle_invite(#ssp_invite{to = _To, from = _From} = Invite) ->
-    io:format("Invite ~p~n", [Invite]),
-    ok.
+handle_invite(From, To, Ref, Invite, Registry) ->
+    io:format("handle_invite ~p~n", [Invite]),
+    case ets:select(Registry, ets:fun2ms(fun(N = #client{username=T}) when T == To -> N end)) of
+        [#client{pid = PID, token = _Token, username = To} = _Client] ->
+            io:format("found peer ~p~n", [To]),
+            PID ! {ssp_session, send_message, From, Invite},
+            ok;
+        [_H|_T] ->
+            {error, multiple_session_for_client};
+        _ ->
+            {error, client_not_found}
+    end.
