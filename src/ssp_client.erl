@@ -11,7 +11,7 @@
     callback_mode/0
 ]).
 
--include("./messages.hrl").
+-include("./message_defs.hrl").
 
 -export([
     waiting_for_message/3
@@ -75,10 +75,10 @@ handle_message(#{<<"message">> := <<"register">>, <<"username">> := Username, <<
 
 handle_message(#{<<"message">> := <<"invite">>, <<"token">> := Token} = Invite, _Socket) ->
     io:format("~n INVITE ~n ~n"),
-    case message_parser:parse_invite(Invite) of
-        {ok, From, To, UUID} ->
+    case messages:parse_invite(Invite) of
+        {ok, From, To, MediaAttribute, UUID, Token} ->
             io:format("~n Calling SSP function ~n ~n"),
-            ssp_core:ssp_client_invite(Token, From, To, UUID, Invite);
+            ssp_core:ssp_client_invite(Token, From, To, UUID, MediaAttribute);
         Rsp ->
             io:format("~n recieved ~p~n", [Rsp]),
             error

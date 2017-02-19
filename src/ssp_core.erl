@@ -1,6 +1,6 @@
 -module(ssp_core).
 -include_lib("stdlib/include/ms_transform.hrl").
--include("./messages.hrl").
+-include("./message_defs.hrl").
 
 -behaviour(gen_server).
 
@@ -12,7 +12,8 @@
 ]).
 
 -record(state, {
-    registry :: ets:tab() %% {Pid :: pid(), UserName :: binary(), Token :: binary()}
+    client_registry :: ets:tab(), %% {Pid :: pid(), UserName :: binary(), Token :: binary()}
+    call_registry :: ets:tab() %% {caller :: binary(), callee :: binary(), session_id:: binary}
 }).
 
 - record(client, {
@@ -20,6 +21,14 @@
     username :: binary(),
     pid :: pid(),
     timestamp :: integer()
+}).
+
+- record(call_session, {
+    session_id :: binary(),
+    caller :: binary(),
+    callee :: pid(),
+    state :: atom(),
+    invite_timestamp :: integer()
 }).
 
 -export([
@@ -33,19 +42,21 @@ start_link() ->
 
 init([]) ->
     {ok, #state{
-        registry = ets:new(?MODULE, [ordered_set, {keypos,#client.token}, named_table])
+        client_registry = ets:new(ssp_core_client_registry, [ordered_set, {keypos,#client.token}, named_table]),
+        call_registry = ets:new(ssp_core_call_registry, [ordered_set, {keypos,#call_session.session_id}, named_table])
     }}.
 
 register_ssp_client(Pid, Username, Password) ->
     gen_server:call(?MODULE, {register_ssp_client, Pid, Username, Password}, infinity).
 
-ssp_client_invite(Token, From, To, UUID, Invite) ->
-    gen_server:call(?MODULE, {ssp_client_invite, Token, From, To, UUID, Invite}, infinity).
+ssp_client_invite(Token, From, To, UUID, MediaAttribute) ->
+    gen_server:call(?MODULE, {ssp_client_invite, Token, From, To, UUID, MediaAttribute}, infinity).
 
 ssp_client_disconnected(_Pid) ->
     ok.
 
-handle_call({register_ssp_client, Pid, Username, _Password}, _From, #state{registry = ClientRegistry} = State) ->
+handle_call({register_ssp_client, Pid, Username, _Password}, _From,
+    #state{client_registry = ClientRegistry} = State) ->
     %check if user already exists
     % TODO: MUTEX required for ets
     Token = list_to_binary(uuid:to_string(uuid:uuid4())),
@@ -62,13 +73,14 @@ handle_call({register_ssp_client, Pid, Username, _Password}, _From, #state{regis
     ),
     {reply, {ok, Token}, State};
 
-handle_call({ssp_client_invite, Token, From, To, UUID, Invite}, _From, #state{registry = ClientRegistry} = State) ->
+handle_call({ssp_client_invite, Token, From, To, UUID, MediaAttribute}, _From,
+    #state{client_registry = ClientRegistry, call_registry = CallRegistry} = State) ->
     %check if user already exists
     io:format("handling ssp_client_invite ~n"),
     case ets:select(ClientRegistry, ets:fun2ms(fun(N = #client{token=T}) when T == Token -> N end)) of
         [#client{token = Token, username = From} = _Client] ->
             io:format("found peer~n"),
-            Ret = handle_invite(From, To, UUID, Invite, ClientRegistry),
+            Ret = handle_invite(From, To, UUID, MediaAttribute, ClientRegistry, CallRegistry),
             {reply, Ret, State};
         [_H | _T] ->
             {reply, {error, multiple_session}, State};
@@ -81,11 +93,13 @@ handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 
 
-handle_invite(From, To, UUID, Invite, ClientRegistry) ->
-    io:format("handle_invite ~p~n", [Invite]),
+handle_invite(From, To, UUID, MediaAttribute, ClientRegistry, CallRegistry) ->
     case ets:select(ClientRegistry, ets:fun2ms(fun(N = #client{username=T}) when T == To -> N end)) of
-        [#client{pid = PID, token = _Token, username = To} = _Client] ->
+        [#client{pid = PID, token = Token, username = To} = _Client] ->
             io:format("found peer ~p~n", [To]),
+            SessionID = list_to_binary(uuid:to_string(uuid:uuid4())),
+            update_call_registry(CallRegistry, From, To, calling, SessionID),
+            Invite = messages:cook_invite(From, To, MediaAttribute, UUID, Token, SessionID),
             PID ! {ssp_core, send_message, From, Invite},
             ok;
         [_H|_T] ->
@@ -93,3 +107,17 @@ handle_invite(From, To, UUID, Invite, ClientRegistry) ->
         _ ->
             {error, client_not_found}
     end.
+
+
+update_call_registry(CallRegistry, Caller, Callee, State, SessionID) ->
+    ets:select_delete(CallRegistry, ets:fun2ms(fun(#call_session{session_id = ID}) when ID == SessionID -> true end)),
+    % create new
+    true = ets:insert_new(CallRegistry,
+        #call_session{
+            session_id = SessionID,
+            caller = Caller,
+            callee = Callee,
+            state = State,
+            invite_timestamp = erlang:system_time()
+        }
+    ).
