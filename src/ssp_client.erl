@@ -76,7 +76,7 @@ handle_message(#{<<"message">> := <<"register">>, <<"username">> := Username, <<
 handle_message(#{<<"message">> := <<"invite">>, <<"token">> := Token} = Invite, Socket) ->
     io:format("~n INVITE ~n ~n"),
     case messages:parse_invite(Invite) of
-        {ok, From, To, MediaAttribute, UUID, Token} ->
+        {ok, From, To, MediaAttribute, UUID} ->
             io:format("~n Calling SSP function ~n ~n"),
             case ssp_core:ssp_client_invite(Token, From, To, UUID, MediaAttribute) of
                 {ok, SessionID} ->
@@ -89,6 +89,23 @@ handle_message(#{<<"message">> := <<"invite">>, <<"token">> := Token} = Invite, 
         _ ->
             io:format("~n Incorrect message ~p~n", [Invite]),
             ErrorMessage = #{message => error, packet => Invite, reason => invalid_message},
+            gen_tcp:send(Socket, jsone:encode(ErrorMessage))
+    end;
+
+handle_message(#{<<"message">> := <<"ready">>, <<"token">> := Token} = Ready, Socket) ->
+    io:format("~n READY ~n ~n"),
+    case messages:parse_ready(Ready) of
+        {ok, SessionID, UUID, Ref, ReadyPayload} ->
+            case ssp_core:ssp_client_ready(Token, SessionID, UUID, Ref, ReadyPayload) of
+                {error, Error} ->
+                    ErrorMessage = #{message => error, packet => Ready, reason => Error},
+                    gen_tcp:send(Socket, jsone:encode(ErrorMessage));
+                _ ->
+                    ok
+            end;
+        _ ->
+            io:format("~n Incorrect message ~p ~n", [Ready]),
+            ErrorMessage = #{message => error, packet => Ready, reason => invalid_message},
             gen_tcp:send(Socket, jsone:encode(ErrorMessage))
     end;
 

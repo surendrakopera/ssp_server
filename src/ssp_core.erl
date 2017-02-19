@@ -37,6 +37,7 @@
 -export([
     register_ssp_client/3,
     ssp_client_invite/5,
+    ssp_client_ready/5,
     ssp_client_disconnected/1
 ]).
 
@@ -56,6 +57,9 @@ register_ssp_client(Pid, Username, Password) ->
 ssp_client_invite(Token, From, To, UUID, MediaAttribute) ->
     gen_server:call(?MODULE, {ssp_client_invite, Token, From, To, UUID, MediaAttribute}, infinity).
 
+ssp_client_ready(Token, SessionID, UUID, Ref, ReadyPayload) ->
+    gen_server:call(?MODULE, {ssp_client_ready, Token, SessionID, UUID, Ref, ReadyPayload}, infinity).
+
 ssp_client_disconnected(_Pid) ->
     ok.
 
@@ -70,10 +74,10 @@ handle_call({ssp_client_invite, Token, From, To, UUID, MediaAttribute}, _From,
     #state{client_registry = ClientRegistry, call_registry = CallRegistry} = State) ->
     %check if user already exists
     io:format("handling ssp_client_invite ~n"),
-    case ets:select(ClientRegistry, ets:fun2ms(fun(N = #client{token=T}) when T == Token -> N end)) of
-        [#client{pid = CallerPID, token = Token, username = From} = _Client] ->
+    case ets:select(ClientRegistry, ets:fun2ms(fun(C = #client{token=T}) when T == Token -> C end)) of
+        [#client{pid = _PID, token = Token, username = From} = _Client] ->
             io:format("found peer~n"),
-            Ret = handle_invite(CallerPID, From, To, UUID, MediaAttribute, ClientRegistry, CallRegistry),
+            Ret = handle_invite(From, To, UUID, MediaAttribute, ClientRegistry, CallRegistry),
             {reply, Ret, State};
         [_H | _T] ->
             {reply, {error, multiple_session}, State};
@@ -81,6 +85,17 @@ handle_call({ssp_client_invite, Token, From, To, UUID, MediaAttribute}, _From,
             io:format("invalid session~n"),
             {reply, {error, invalid_session}, State}
     end;
+
+handle_call({ssp_client_ready, Token, SessionID, UUID, Ref, ReadyPayload}, _From, #state{call_registry = CallRegistry, client_registry = ClientRegistry} = State) ->
+    case ets:select(ClientRegistry, ets:fun2ms(fun(C = #client{token=T}) when T == Token -> C end)) of
+        [#client{pid = _PID, token = Token} = _Client] ->
+            Rsp = handle_ready(SessionID, UUID, Ref, ReadyPayload, CallRegistry, ClientRegistry),
+            {reply, Rsp, State};
+        _ ->
+            io:format("invalid session~n"),
+            {reply, {error, invalid_session}, State}
+    end;
+
 
 handle_call(_Request, _From, State) ->
     {reply, ok, State}.
@@ -95,8 +110,8 @@ handle_info(trigger, #state{call_registry = CallRegistry} = State) ->
 handle_info(_Info, State) ->
     {noreply, State}.
 
-handle_invite(CallerPID, From, To, UUID, MediaAttribute, ClientRegistry, CallRegistry) ->
-    case ets:select(ClientRegistry, ets:fun2ms(fun(N = #client{username=T}) when T == To -> N end)) of
+handle_invite(From, To, UUID, MediaAttribute, ClientRegistry, CallRegistry) ->
+    case ets:select(ClientRegistry, ets:fun2ms(fun(C = #client{username=T}) when T == To -> C end)) of
         [#client{pid = PID, token = Token, username = To} = _Client] ->
             io:format("found peer ~p~n", [To]),
             SessionID = list_to_binary(uuid:to_string(uuid:uuid4())),
@@ -110,6 +125,25 @@ handle_invite(CallerPID, From, To, UUID, MediaAttribute, ClientRegistry, CallReg
             {error, client_not_found}
     end.
 
+handle_ready(SessionID, UUID, Ref, ReadyPayload, CallRegistry, ClientRegistry) ->
+    case ets:lookup(CallRegistry, SessionID) of
+        [#call_session{session_id = SessionID, caller = Caller, callee = Callee, state = inviting} = _CallSession] ->
+            io:format("Sending ready to ~p from ~p~n",[Callee, Caller]),
+            forward_ready_message(Caller, Callee, UUID, Ref, ReadyPayload, ClientRegistry),
+            update_call_registry(CallRegistry, Caller, Callee, ready, SessionID);
+        _ ->
+            {error, invalid_call_session}
+    end.
+
+forward_ready_message(Caller, Callee, UUID, Ref, ReadyPayload, ClientRegistry) ->
+    case ets:select(ClientRegistry, ets:fun2ms(fun(C = #client{username=T}) when T == Caller -> C end)) of
+        [#client{pid = PID, username = Caller} = _Client] ->
+            Ready = messages:cook_ready(UUID, Ref, ReadyPayload),
+            PID ! {ssp_core, send_message, Callee, Ready},
+            ok;
+        _ ->
+            {error, client_not_found}
+    end.
 
 update_call_registry(CallRegistry, Caller, Callee, State = inviting, SessionID) ->
     % create new
