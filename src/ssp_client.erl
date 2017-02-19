@@ -54,7 +54,7 @@ waiting_for_message(info, {tcp, Socket, Message}, #data{socket = Socket} = Data)
 waiting_for_message(info, {tcp_closed, Socket}, #data{socket = Socket}) ->
     {stop, normal};
 
-waiting_for_message(info, {ssp_session, send_message, From, Message}, #data{socket = Socket} = Data) ->
+waiting_for_message(info, {ssp_core, send_message, From, Message}, #data{socket = Socket} = Data) ->
     io:format("sending message from ~p~n", [From]),
     gen_tcp:send(Socket, jsone:encode(Message)),
     {keep_state, Data};
@@ -64,7 +64,7 @@ waiting_for_message(_, _, Data) ->
 
 handle_message(#{<<"message">> := <<"register">>, <<"username">> := Username, <<"password">> := Password} = _Decoded, Socket) ->
     io:format("~nhandling register~n"),
-    case ssp_session:register_ssp_client(self(), Username, Password) of
+    case ssp_core:register_ssp_client(self(), Username, Password) of
         {ok, Token} ->
             Message = #{ret=>true, message=>registration, token=>Token},
             gen_tcp:send(Socket, jsone:encode(Message));
@@ -76,9 +76,9 @@ handle_message(#{<<"message">> := <<"register">>, <<"username">> := Username, <<
 handle_message(#{<<"message">> := <<"invite">>, <<"token">> := Token} = Invite, _Socket) ->
     io:format("~n INVITE ~n ~n"),
     case message_parser:parse_invite(Invite) of
-        {ok, From, To, Ref} ->
+        {ok, From, To, UUID} ->
             io:format("~n Calling SSP function ~n ~n"),
-            ssp_session:ssp_client_invite(Token, From, To, Ref, Invite);
+            ssp_core:ssp_client_invite(Token, From, To, UUID, Invite);
         Rsp ->
             io:format("~n recieved ~p~n", [Rsp]),
             error
