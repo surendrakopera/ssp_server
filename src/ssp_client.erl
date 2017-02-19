@@ -73,15 +73,23 @@ handle_message(#{<<"message">> := <<"register">>, <<"username">> := Username, <<
             error
     end;
 
-handle_message(#{<<"message">> := <<"invite">>, <<"token">> := Token} = Invite, _Socket) ->
+handle_message(#{<<"message">> := <<"invite">>, <<"token">> := Token} = Invite, Socket) ->
     io:format("~n INVITE ~n ~n"),
     case messages:parse_invite(Invite) of
         {ok, From, To, MediaAttribute, UUID, Token} ->
             io:format("~n Calling SSP function ~n ~n"),
-            ssp_core:ssp_client_invite(Token, From, To, UUID, MediaAttribute);
-        Rsp ->
-            io:format("~n recieved ~p~n", [Rsp]),
-            error
+            case ssp_core:ssp_client_invite(Token, From, To, UUID, MediaAttribute) of
+                {ok, SessionID} ->
+                    Invited = messages:cook_invited(To, UUID, SessionID),
+                    gen_tcp:send(Socket, jsone:encode(Invited));
+                {error, Error} ->
+                    ErrorMessage = #{message => error, packet => Invite, reason => Error},
+                    gen_tcp:send(Socket, jsone:encode(ErrorMessage))
+            end;
+        _ ->
+            io:format("~n Incorrect message ~p~n", [Invite]),
+            ErrorMessage = #{message => error, packet => Invite, reason => invalid_message},
+            gen_tcp:send(Socket, jsone:encode(ErrorMessage))
     end;
 
 handle_message(Message, _Socket) ->
