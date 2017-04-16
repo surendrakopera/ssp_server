@@ -28,9 +28,9 @@ init([]) ->
             type => supervisor
         },
         #{
-            id => ssp_session,
+            id => ssp_core,
             type => worker,
-            start => {ssp_session, start_link, []},
+            start => {ssp_core, start_link, []},
             restart => permanent
         }
     ],
